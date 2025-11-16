@@ -1,167 +1,151 @@
-#streamlit mall app
 import streamlit as st
 import pandas as pd
 import numpy as np
-import seaborn as sns
-import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-st.set_page_config(page_title="Customer Segmentation App", layout="wide")
+st.set_page_config(page_title="Smart Clustering App", layout="wide")
+st.title("Smart Clustering & Visualization App")
 
-st.title("Customer Segmentation using K-Means and PCA")
-st.markdown("""
-Upload a customer dataset (CSV).  
-This app will preprocess, run PCA (when possible), and K-Means.  
-It handles small/degenerate datasets and gives helpful messages.
-""")
-
+#upload Section
+st.markdown("### Upload Your Dataset (CSV)")
 uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
-if uploaded_file is None:
-    st.info("Upload a CSV file to get started.")
-    st.stop()
 
-mall = pd.read_csv(uploaded_file)
-st.subheader("Preview of Uploaded Data")
-st.dataframe(mall.head())
+if uploaded_file is not None:
+    mall = pd.read_csv(uploaded_file)
+    st.success("File uploaded successfully!")
+    st.write("### Preview of Uploaded Data")
+    st.dataframe(mall.head())
 
-#column selection
-st.markdown("### Select the features to include in clustering")
-all_columns = mall.columns.tolist()
-selected_columns = st.multiselect("Choose columns for clustering:", all_columns, default=None)
+    #data Cleaning and Feature Selection
+    st.markdown("### Feature Selection and Preprocessing")
 
-if not selected_columns:
-    st.warning("Please select at least one column for clustering.")
-    st.stop()
+    #automatically detecting usable columns
+    numeric_cols = mall.select_dtypes(include=[np.number]).columns.tolist()
+    categorical_cols = mall.select_dtypes(include=['object', 'category']).columns.tolist()
 
-#a copy
-data = mall[selected_columns].copy()
+    #dropping identifier-like columns automatically
+    id_like_cols = [col for col in mall.columns if 'id' in col.lower() or 'name' in col.lower()]
 
-#dropping columns with all-NaN
-data = data.dropna(axis=1, how='all')
-#optionally drop rows with all NaN, but keep rows where at least one feature is present
-data = data.dropna(axis=0, how='all')
+    if id_like_cols:
+        st.info(f"Dropping potential ID/name columns: {id_like_cols}")
+        mall = mall.drop(columns=id_like_cols, errors='ignore')
+        #updating lists after dropping
+        numeric_cols = mall.select_dtypes(include=[np.number]).columns.tolist()
+        categorical_cols = mall.select_dtypes(include=['object', 'category']).columns.tolist()
 
-#converting non-numeric columns to dummies
-data = pd.get_dummies(data, drop_first=True)
-
-#removing constant columns
-nunique = data.nunique()
-const_cols = nunique[nunique <= 1].index.tolist()
-if const_cols:
-    st.info(f"Removed {len(const_cols)} constant column(s): {const_cols}")
-    data = data.drop(columns=const_cols)
-
-n_samples, n_features = data.shape
-
-if n_samples < 2:
-    st.error("Not enough rows after preprocessing. Need at least 2 samples to cluster.")
-    st.stop()
-if n_features < 1:
-    st.error("No usable features remain after preprocessing. Try selecting different columns.")
-    st.stop()
-
-st.write(f"Dataset after preprocessing: **{n_samples}** rows × **{n_features}** features")
-
-#filling remaining NaNs with column median (safer for numeric)
-data = data.fillna(data.median())
-
-#standardize
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(data)
-
-#choosing allowable k range based on samples
-max_k = min(10, n_samples)  #can't have more clusters than samples
-if max_k < 2:
-    st.error("Not enough samples to form 2 clusters. Need at least 2 samples.")
-    st.stop()
-
-st.markdown("### Choose Number of Clusters")
-k = st.slider("Number of clusters (K)", min_value=2, max_value=max_k, value=min(5, max_k), step=1)
-
-#fitting KMeans
-try:
-    kmeans = KMeans(n_clusters=k, random_state=42)
-    y_kmeans = kmeans.fit_predict(X_scaled)
-except Exception as e:
-    st.error(f"KMeans failed: {e}")
-    st.stop()
-
-#computing silhouette if possible (needs at least 2 clusters and samples > clusters..)
-silhouette = None
-try:
-    if n_samples >= 2 and k >= 2 and n_samples > k:
-        silhouette = silhouette_score(X_scaled, y_kmeans)
-        st.write(f"**Silhouette Score:** {silhouette:.3f}")
-    else:
-        st.info("Silhouette score not computed because n_samples <= n_clusters.")
-except Exception:
-    st.info("Silhouette score could not be computed for this dataset.")
-
-#adding cluster labels to original mall copy for download/summary
-results_mall = mall.copy()
-results_mall['Cluster'] = y_kmeans
-
-#PCA for visualization: choose n_components safely
-n_components = min(2, n_samples, n_features)
-if n_components == 2:
-    pca = PCA(n_components=2)
-    X_pca = pca.fit_transform(X_scaled)
-    st.markdown("### Cluster Visualization (PCA Projection - 2D)")
-    fig, ax = plt.subplots(figsize=(8,6))
-    sns.scatterplot(x=X_pca[:, 0], y=X_pca[:, 1], hue=y_kmeans, palette='tab10', s=80, ax=ax)
-    ax.set_title("Customer Segments (PCA + K-Means)")
-    ax.set_xlabel("Principal Component 1")
-    ax.set_ylabel("Principal Component 2")
-    ax.legend(title="Cluster", loc='best', bbox_to_anchor=(1, 1))
-    st.pyplot(fig)
-
-elif n_components == 1:
-    #1D projection: either use PCA with 1 component or pick the first feature
-    pca = PCA(n_components=1)
-    X_pca = pca.fit_transform(X_scaled).ravel()
-    st.markdown("### Cluster Visualization (1D PCA)")
-    fig, ax = plt.subplots(figsize=(8,4))
-    #stripplot / jittered scatter for 1D visualization
-    sns.stripplot(x=y_kmeans, y=X_pca, jitter=True, ax=ax)
-    ax.set_xlabel("Cluster")
-    ax.set_ylabel("PCA Component 1")
-    ax.set_title("1D view of clusters")
-    st.pyplot(fig)
-else:
-    st.info("Unable to produce PCA visualization for this dataset configuration.")
-
-#cluster summary
-st.markdown("### Cluster Summary")
-
-#separating numeric and categorical columns
-numeric_cols = results_mall[selected_columns].select_dtypes(include=[np.number]).columns.tolist()
-categorical_cols = [col for col in selected_columns if col not in numeric_cols]
-
-if numeric_cols:
-    st.subheader("Numeric Feature Means by Cluster")
-    st.dataframe(results_mall.groupby('Cluster')[numeric_cols].mean().round(2))
-
-if categorical_cols:
-    st.subheader("Most Frequent Categories by Cluster")
-    mode_summary = (
-        results_mall.groupby('Cluster')[categorical_cols]
-        .agg(lambda x: x.mode().iloc[0] if not x.mode().empty else np.nan)
+    #letting user choose features interactively
+    selected_columns = st.multiselect(
+        "Select features for clustering:",
+        options=numeric_cols + categorical_cols,
+        default=numeric_cols[:3] if len(numeric_cols) >= 3 else numeric_cols
     )
-    st.dataframe(mode_summary)
 
-if not numeric_cols and not categorical_cols:
-    st.info("No valid columns available for summary.")
+    if not selected_columns:
+        st.warning("Please select at least one feature to continue.")
+        st.stop()
 
-cluster_counts = results_mall['Cluster'].value_counts().sort_index()
-st.write("Cluster Sizes:")
-st.table(cluster_counts)
+    #subset data
+    data = mall[selected_columns].copy()
 
-#download results
-csv = results_mall.to_csv(index=False).encode('utf-8')
-st.download_button("Download Clustered Data", csv, "clustered_customers.csv", "text/csv")
+    #handling missing values
+    missing_ratio = data.isna().mean()
+    high_missing = missing_ratio[missing_ratio > 0.3].index.tolist()  #dropping columns with >30% missing
+    if high_missing:
+        st.info(f"Dropping columns with >30% missing data: {high_missing}")
+        data = data.drop(columns=high_missing)
+
+    data = data.fillna(data.median(numeric_only=True))
+
+    #encoding categorical columns safely
+    data = pd.get_dummies(data, drop_first=True)
+
+    #dropping constant or near-constant columns
+    nunique = data.nunique()
+    const_cols = nunique[nunique <= 1].index.tolist()
+    if const_cols:
+        st.info(f"Removed {len(const_cols)} constant column(s): {const_cols}")
+        data = data.drop(columns=const_cols)
+
+    #ensuring there are valid features left
+    if data.shape[1] == 0:
+        st.error("No usable features remain after preprocessing. Try selecting different columns.")
+        st.stop()
+
+    #scaling data
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(data)
+
+    #data Diagnostics Section
+    st.markdown("### Data Diagnostics")
+    st.write("Original Data (first 5 rows):")
+    st.dataframe(mall[selected_columns].head())
+
+    st.write("Scaled Data (for clustering):")
+    scaled_mall = pd.DataFrame(X_scaled, columns=data.columns)
+    st.dataframe(scaled_mall.head())
+
+    st.write("Numeric Columns Used:", numeric_cols)
+    st.write("Categorical Columns Encoded:", categorical_cols)
+    st.write("Columns Dropped:", id_like_cols + high_missing + const_cols)
+    st.write(f"Final feature count: {data.shape[1]}")
+
+    #K-Means Clustering
+    st.markdown("### K-Means Clustering")
+    n_clusters = st.slider("Select number of clusters (K)", 2, 10, 3)
+
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+    clusters = kmeans.fit_predict(X_scaled)
+    data["Cluster"] = clusters
+
+    st.success(f"K-Means clustering completed with {n_clusters} clusters!")
+
+    #clustering Size Summary
+    cluster_counts = data["Cluster"].value_counts().sort_index()
+    st.subheader("luster Sizes:")
+    st.table(cluster_counts)
+
+    #PCA for visualization
+    st.markdown("### PCA Visualization (2D Projection)")
+
+    if X_scaled.shape[1] >= 2:
+        pca = PCA(n_components=2)
+        reduced = pca.fit_transform(X_scaled)
+        data["PCA1"], data["PCA2"] = reduced[:, 0], reduced[:, 1]
+
+        plt.figure(figsize=(8, 6))
+        sns.scatterplot(data=data, x="PCA1", y="PCA2", hue="Cluster", palette="viridis", s=80)
+        plt.title("Clusters Visualized in 2D Space (via PCA)")
+        st.pyplot(plt)
+
+    elif X_scaled.shape[1] == 1:
+        st.warning("Only one feature selected — showing 1D cluster visualization.")
+        feature_name = data.columns[0]
+
+        plt.figure(figsize=(8, 2))
+        sns.stripplot(
+            x=data[feature_name],
+            y=[""] * len(data),
+            hue=data["Cluster"],
+            palette="viridis",
+            s=10,
+            legend=False
+        )
+        plt.title(f"1D Cluster Visualization ({feature_name})")
+        st.pyplot(plt)
+    else:
+        st.warning("PCA visualization skipped — not enough features for 2D projection.")
+
+    #cluster Summary
+    st.markdown("### Cluster Summary (Mean Values)")
+    cluster_summary = data.groupby("Cluster").mean(numeric_only=True)
+    st.dataframe(cluster_summary.style.background_gradient(cmap="Blues"))
+
+else:
+    st.info("Please upload a CSV file to begin.")
 
 st.markdown('---')
-st.markdown('Built with love by iamphyton')
+st.markdown('built with love by iamphyton') 
